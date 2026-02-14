@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { getProjectTasks, updateTask } from '../services/taskService';
+import { saveAnalysisToHistory, getProjectAnalysisHistory } from '../services/analysisHistoryService';
 import Navbar from '../components/Navbar';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { formatDateForBackend, formatDateForDisplay } from '../utils/dateUtils.js';
@@ -16,9 +17,12 @@ const AIAnalysis = () => {
   const [analysis, setAnalysis] = useState(null);
   const [selectedSuggestion, setSelectedSuggestion] = useState(null);
   const [error, setError] = useState(null);
+  const [showHistory, setShowHistory] = useState(false);
+  const [analysisHistory, setAnalysisHistory] = useState([]);
 
   useEffect(() => {
     loadTasksAndAnalyze();
+    loadAnalysisHistory();
   }, [projectId]);
 
   const loadTasksAndAnalyze = async () => {
@@ -38,6 +42,15 @@ const AIAnalysis = () => {
       console.error(err);
       setError('Failed to load tasks');
       setLoading(false);
+    }
+  };
+
+  const loadAnalysisHistory = async () => {
+    try {
+      const history = await getProjectAnalysisHistory(projectId);
+      setAnalysisHistory(history);
+    } catch (err) {
+      console.error('Failed to load analysis history:', err);
     }
   };
 
@@ -152,6 +165,15 @@ const AIAnalysis = () => {
       };
       
       setAnalysis(transformedAnalysis);
+      
+      // Save analysis to history
+      try {
+        await saveAnalysisToHistory(projectId, transformedAnalysis);
+        await loadAnalysisHistory(); // Refresh history list
+      } catch (saveError) {
+        console.error('Failed to save analysis to history:', saveError);
+        // Don't show error to user, just log it
+      }
     } catch (err) {
       console.error('AI Analysis error:', err);
       setError(`Failed to perform AI analysis: ${err.message}`);
@@ -211,17 +233,31 @@ const AIAnalysis = () => {
             <p className="text-slate-400">Intelligent recommendations powered by backend AI engine</p>
           </div>
           
-          {analysis && (
-            <button
-              onClick={applyAllSuggestions}
-              className="bg-gradient-to-r from-green-600 to-green-700 text-white px-6 py-3 rounded-xl font-semibold hover:from-green-500 hover:to-green-600 transition-all shadow-lg shadow-green-900/50 flex items-center space-x-2"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-              </svg>
-              <span>Apply All Suggestions</span>
-            </button>
-          )}
+          <div className="flex items-center space-x-3">
+            {analysisHistory.length > 0 && (
+              <button
+                onClick={() => setShowHistory(true)}
+                className="bg-slate-800/50 backdrop-blur-sm border border-slate-700/50 text-white px-5 py-3 rounded-xl font-medium hover:bg-slate-700/50 transition-all flex items-center space-x-2"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <span>History ({analysisHistory.length})</span>
+              </button>
+            )}
+            
+            {analysis && (
+              <button
+                onClick={applyAllSuggestions}
+                className="bg-gradient-to-r from-green-600 to-green-700 text-white px-6 py-3 rounded-xl font-semibold hover:from-green-500 hover:to-green-600 transition-all shadow-lg shadow-green-900/50 flex items-center space-x-2"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+                <span>Apply All Suggestions</span>
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Error Display */}
@@ -431,6 +467,99 @@ const AIAnalysis = () => {
           </>
         )}
       </div>
+
+      {/* History Modal */}
+      {showHistory && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 px-4">
+          <div className="bg-slate-900/95 backdrop-blur-xl border border-slate-700/50 rounded-2xl shadow-2xl p-8 max-w-4xl w-full max-h-[80vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-2xl font-bold text-white">Analysis History</h2>
+              <button
+                onClick={() => setShowHistory(false)}
+                className="text-slate-400 hover:text-white transition-colors"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              {analysisHistory.map((historyItem, idx) => (
+                <div
+                  key={historyItem.id}
+                  className="bg-slate-800/40 backdrop-blur-sm border border-slate-700/50 rounded-xl p-6 hover:border-slate-600/50 transition-all cursor-pointer"
+                  onClick={() => {
+                    setAnalysis({
+                      overallRisk: historyItem.overallRisk,
+                      criticalIssues: historyItem.criticalIssues,
+                      suggestions: historyItem.suggestions,
+                      optimizations: historyItem.optimizations,
+                      backendData: historyItem.backendData
+                    });
+                    setShowHistory(false);
+                  }}
+                >
+                  <div className="flex items-start justify-between mb-4">
+                    <div className="flex-1">
+                      <div className="flex items-center space-x-3 mb-2">
+                        <h3 className="text-lg font-semibold text-white">
+                          Analysis #{analysisHistory.length - idx}
+                        </h3>
+                        <span className={`px-3 py-1 rounded-lg text-xs font-semibold ${
+                          historyItem.overallRisk >= 70 ? 'bg-red-500/10 text-red-400 border border-red-500/30' :
+                          historyItem.overallRisk >= 50 ? 'bg-orange-500/10 text-orange-400 border border-orange-500/30' :
+                          'bg-green-500/10 text-green-400 border border-green-500/30'
+                        }`}>
+                          Risk: {historyItem.overallRisk}
+                        </span>
+                      </div>
+                      <p className="text-sm text-slate-400">
+                        {historyItem.timestamp?.toLocaleString('en-US', {
+                          month: 'short',
+                          day: 'numeric',
+                          year: 'numeric',
+                          hour: '2-digit',
+                          minute: '2-digit'
+                        })}
+                      </p>
+                    </div>
+                    <svg className="w-5 h-5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-4">
+                    <div className="bg-slate-900/50 rounded-lg p-3">
+                      <div className="text-xs text-slate-400 mb-1">Tasks Analyzed</div>
+                      <div className="text-xl font-bold text-white">{historyItem.taskCount}</div>
+                    </div>
+                    <div className="bg-slate-900/50 rounded-lg p-3">
+                      <div className="text-xs text-slate-400 mb-1">Critical Issues</div>
+                      <div className="text-xl font-bold text-red-400">{historyItem.criticalIssues?.length || 0}</div>
+                    </div>
+                    <div className="bg-slate-900/50 rounded-lg p-3">
+                      <div className="text-xs text-slate-400 mb-1">Risk Reduction</div>
+                      <div className="text-xl font-bold text-green-400">{historyItem.optimizations?.totalRiskReduction || 0}%</div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+
+              {analysisHistory.length === 0 && (
+                <div className="text-center py-12">
+                  <div className="inline-flex items-center justify-center w-16 h-16 bg-slate-800/50 rounded-2xl mb-4">
+                    <svg className="w-8 h-8 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                  </div>
+                  <p className="text-slate-400">No analysis history yet</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
