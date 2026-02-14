@@ -101,3 +101,4 @@ export const deleteAnalysisFromHistory = async (analysisId) => {
     throw error;
   }
 };
+
