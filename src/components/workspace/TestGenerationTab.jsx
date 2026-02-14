@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useTestGeneration } from '../../hooks/useTestGeneration';
 import { aiTestGenApi } from '../../api/aiTestGenClient';
+import { useAuth } from '../../contexts/AuthContext';
+import { saveTestRunHistorySnapshot } from '../../services/testGenerationHistoryService';
 import {
   Sparkles, ChevronDown, ChevronRight, Download, FileJson, FileText,
   FileSpreadsheet, Code2, Trash2, AlertCircle, CheckCircle2, Clock,
@@ -33,6 +35,7 @@ const TYPE_LABELS = {
 };
 
 const TestGenerationTab = ({ projectId }) => {
+  const { currentUser } = useAuth();
   const {
     suite, setSuite, loading, error, generate, loadHistory, history,
     removeSuite, handleExport,
@@ -63,10 +66,25 @@ const TestGenerationTab = ({ projectId }) => {
         `/tests/${suite.suite_id}/run?repo=${encodeURIComponent(ghSelectedRepo)}&token=${encodeURIComponent(ghToken)}`
       );
       setRunStatus(data);
-      if (data.run_id) pollRunStatus(data.run_id);
+      await persistRunSnapshot(data);
+      if (data.run_id) {
+        pollRunStatus(data.run_id);
+      } else {
+        setRunLoading(false);
+        await loadHistory();
+      }
     } catch (err) {
-      setRunStatus({ status: 'error', conclusion: 'failure', logs: err.message });
+      const failureStatus = {
+        run_id: null,
+        status: 'error',
+        conclusion: 'failure',
+        logs: err.message,
+        message: err.message,
+      };
+      setRunStatus(failureStatus);
+      await persistRunSnapshot(failureStatus);
       setRunLoading(false);
+      await loadHistory();
     }
   };
 
@@ -77,13 +95,25 @@ const TestGenerationTab = ({ projectId }) => {
           `/tests/runs/${runId}/status?repo=${encodeURIComponent(ghSelectedRepo)}&token=${encodeURIComponent(ghToken)}`
         );
         setRunStatus(data);
+        await persistRunSnapshot(data);
         if (data.status === 'completed' || data.status === 'error') {
           clearInterval(interval);
           setRunLoading(false);
+          await loadHistory();
         }
-      } catch {
+      } catch (err) {
         clearInterval(interval);
+        const failureStatus = {
+          run_id: runId,
+          status: 'error',
+          conclusion: 'failure',
+          logs: err.message,
+          message: err.message,
+        };
+        setRunStatus(failureStatus);
+        await persistRunSnapshot(failureStatus);
         setRunLoading(false);
+        await loadHistory();
       }
     }, 5000);
   };
@@ -97,6 +127,38 @@ const TestGenerationTab = ({ projectId }) => {
   const [ghLoadingRepos, setGhLoadingRepos] = useState(false);
   const [ghLoadingFiles, setGhLoadingFiles] = useState(false);
   const [ghFileSearch, setGhFileSearch] = useState('');
+
+  const persistRunSnapshot = useCallback(async (runPayload) => {
+    if (!projectId || !suite?.suite_id || !runPayload) return;
+
+    try {
+      const { historyId } = await saveTestRunHistorySnapshot({
+        projectId,
+        suiteId: suite.suite_id,
+        suiteHistoryId: suite._history_id || null,
+        ownerId: currentUser?.uid || null,
+        githubContext: {
+          repo: ghSelectedRepo || '',
+          filePath: ghSelectedFile || '',
+        },
+        runData: runPayload,
+      });
+
+      if (!suite._history_id && historyId) {
+        setSuite((prev) => (prev ? { ...prev, _history_id: historyId } : prev));
+      }
+    } catch (persistError) {
+      console.error('Failed to persist run snapshot:', persistError);
+    }
+  }, [
+    currentUser?.uid,
+    ghSelectedFile,
+    ghSelectedRepo,
+    projectId,
+    setSuite,
+    suite?._history_id,
+    suite?.suite_id,
+  ]);
 
   useEffect(() => { loadHistory(); }, [loadHistory]);
 
@@ -735,31 +797,66 @@ const TestGenerationTab = ({ projectId }) => {
             </div>
           ) : (
             history.map((s) => (
-              <div key={s.suite_id || s.id} className="card-dark rounded-xl p-5 flex items-center justify-between hover:border-dark-600 transition-all">
+              <div
+                key={s.suite_id || s.id}
+                onClick={() => {
+                  if (!s.suite_data) return;
+                  setSuite({ ...s.suite_data, _history_id: s._history_id });
+                  setRunStatus(s.last_run || null);
+                  setActiveView('generate');
+                }}
+                className="card-dark rounded-xl p-5 flex items-center justify-between hover:border-dark-600 transition-all cursor-pointer"
+              >
                 <div className="flex-1">
                   <div className="flex items-center space-x-3 mb-1">
                     <span className="text-white font-medium">{s.component || 'Test Suite'}</span>
-                    <span className="text-xs text-dark-500 font-mono">{s.suite_id}</span>
+                    <span className="text-xs text-dark-500 font-mono">{s.suite_id || s.id}</span>
                   </div>
-                  <p className="text-dark-400 text-sm truncate max-w-xl">{s.user_story?.substring(0, 120) || 'No story'}</p>
+                  <p className="text-dark-400 text-sm truncate max-w-xl">
+                    {s.user_story?.substring(0, 120) ||
+                      s.generation_payload?.user_story?.substring(0, 120) ||
+                      'No story'}
+                  </p>
                   <div className="flex items-center space-x-3 mt-2">
                     <span className="text-xs text-dark-500">{s.total_cases || 0} cases</span>
                     <span className="text-xs text-dark-600">ÔÇó</span>
                     <span className="text-xs text-dark-500">{s.format || 'gherkin'}</span>
                     <span className="text-xs text-dark-600">ÔÇó</span>
                     <span className="text-xs text-dark-500">{s.created_at ? new Date(s.created_at).toLocaleDateString() : ''}</span>
+                    {s.last_run?.status && (
+                      <>
+                        <span className="text-xs text-dark-600">ÔÇó</span>
+                        <span
+                          className={`text-xs ${s.last_run.conclusion === 'success'
+                            ? 'text-emerald-400'
+                            : s.last_run.conclusion === 'failure'
+                              ? 'text-red-400'
+                              : 'text-violet-400'
+                            }`}
+                        >
+                          Last run: {s.last_run.status}
+                        </span>
+                      </>
+                    )}
                   </div>
                 </div>
                 <div className="flex items-center space-x-2 ml-4">
                   <button
-                    onClick={() => handleExport(s.suite_id, 'json')}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      handleExport(s.suite_id, 'json');
+                    }}
                     className="p-2 hover:bg-dark-800 rounded-lg text-dark-400 hover:text-white transition-colors"
                     title="Export JSON"
+                    disabled={!s.suite_id}
                   >
                     <Download className="w-4 h-4" />
                   </button>
                   <button
-                    onClick={() => removeSuite(s.suite_id)}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      removeSuite(s.suite_id, s._history_id);
+                    }}
                     className="p-2 hover:bg-red-500/10 rounded-lg text-dark-400 hover:text-red-400 transition-colors"
                     title="Delete"
                   >
