@@ -1,21 +1,24 @@
 ﻿import { useState } from 'react';
+import { useAuth } from '../../contexts/AuthContext';
+import { uploadImagesToCloudinary, saveUXValidation, saveUIValidation } from '../../services/uxValidationService';
 import ValidationProgress from './ValidationProgress';
 import VisualRegressionResults from './VisualRegressionResults';
 import UIComparisonResults from './UIComparisonResults';
+import UXValidationHistoryModal from './UXValidationHistoryModal';
+import UIValidationHistoryModal from './UIValidationHistoryModal';
 
-const VisualQATab = () => {
+const VisualQATab = ({ projectId }) => {
+  const { currentUser } = useAuth();
   const [activeMode, setActiveMode] = useState(null); // 'ux' or 'ui'
   const [uxScreens, setUxScreens] = useState([]);
   const [isValidating, setIsValidating] = useState(false);
   const [validationResults, setValidationResults] = useState(null);
+  const [showHistoryModal, setShowHistoryModal] = useState(false);
+  const [showUIHistoryModal, setShowUIHistoryModal] = useState(false);
   
   // UI validation states
   const [referenceUI, setReferenceUI] = useState(null);
   const [comparisonUI, setComparisonUI] = useState(null);
-  const [selectedChecks, setSelectedChecks] = useState({
-    visualRegressions: false,
-    missingElements: false,
-  });
   const [progressChecks, setProgressChecks] = useState([]);
   const [visualRegressionResults, setVisualRegressionResults] = useState(null);
   const [uiComparisonResults, setUIComparisonResults] = useState(null);
@@ -44,7 +47,12 @@ const VisualQATab = () => {
     setIsValidating(true);
 
     try {
-      // Convert images to base64
+      // Step 1: Upload images to Cloudinary
+      console.log('Uploading images to Cloudinary...');
+      const uploadedImages = await uploadImagesToCloudinary(uxScreens);
+      console.log('Images uploaded successfully:', uploadedImages);
+
+      // Step 2: Convert images to base64 for backend validation
       const imagesWithOrder = await Promise.all(
         uxScreens.map(async (screen, index) => {
           const base64 = await fileToBase64(screen.file);
@@ -60,7 +68,10 @@ const VisualQATab = () => {
         images: imagesWithOrder,
       };
 
-      const response = await fetch('http://127.0.0.1:8000/validateux', {
+      // Step 3: Send to backend for validation
+      console.log('Sending to backend for validation...');
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://127.0.0.1:8000';
+      const response = await fetch(`${backendUrl}/validateux`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -71,13 +82,40 @@ const VisualQATab = () => {
       const result = await response.json();
       console.log('Validation result:', result);
       
-      // Handle the response structure - check if it's wrapped in a report object
-      const reportData = result.report || result;
+      // Handle the response structure - the actual report is in validation_report
+      const reportData = result.validation_report || result.report || result;
       
-      // Store in localStorage
+      console.log('Extracted report data:', reportData);
+      console.log('Report data keys:', Object.keys(reportData || {}));
+      
+      // Step 4: Save to Firestore with Cloudinary URLs
+      console.log('Saving to Firestore...');
+      
+      const validationData = {
+        screenCount: uxScreens.length,
+        images: uploadedImages, // Cloudinary URLs with order
+        results: reportData, // This will be saved as validationResults in Firestore
+      };
+      
+      console.log('Validation data structure:', {
+        screenCount: validationData.screenCount,
+        imagesCount: validationData.images?.length,
+        resultsKeys: Object.keys(validationData.results || {})
+      });
+
+      const docId = await saveUXValidation(
+        validationData,
+        currentUser.uid,
+        projectId
+      );
+      console.log('Saved to Firestore with ID:', docId);
+      
+      // Step 5: Store in localStorage for quick access
       const storageData = {
+        id: docId,
         timestamp: new Date().toISOString(),
         screenCount: uxScreens.length,
+        images: uploadedImages,
         results: reportData,
       };
       
@@ -96,10 +134,10 @@ const VisualQATab = () => {
       // Set the actual report data for display
       setValidationResults(reportData);
       
-      console.log('Validation results set:', reportData);
+      console.log('UX Validation completed successfully!');
     } catch (error) {
       console.error('Error validating UX:', error);
-      alert('Error validating UX. Please try again.');
+      alert(`Error validating UX: ${error.message}. Please try again.`);
     } finally {
       setIsValidating(false);
     }
@@ -134,21 +172,9 @@ const VisualQATab = () => {
     }
   };
 
-  const handleCheckToggle = (checkType) => {
-    setSelectedChecks((prev) => ({
-      ...prev,
-      [checkType]: !prev[checkType],
-    }));
-  };
-
   const handleGetReport = async () => {
     if (!referenceUI || !comparisonUI) {
       alert('Please upload both reference and comparison UI images');
-      return;
-    }
-
-    if (!selectedChecks.visualRegressions && !selectedChecks.missingElements) {
-      alert('Please select at least one check to perform');
       return;
     }
 
@@ -156,101 +182,127 @@ const VisualQATab = () => {
     setVisualRegressionResults(null);
     setUIComparisonResults(null);
 
-    // Initialize progress checks
-    const checks = [];
-    if (selectedChecks.visualRegressions) {
-      checks.push({
+    // Initialize progress checks - both are compulsory
+    const checks = [
+      {
         id: 'visualRegressions',
         title: '1. Detect visual regressions',
         description: 'Checking for broken elements or overlap in UI',
         status: 'pending'
-      });
-    }
-    if (selectedChecks.missingElements) {
-      checks.push({
+      },
+      {
         id: 'missingElements',
         title: '2. Missing elements / layout shifts',
         description: 'Checking for missing elements and layout shifts',
         status: 'pending'
-      });
-    }
+      }
+    ];
     setProgressChecks(checks);
+
+    let visualRegressionData = null;
+    let uiComparisonData = null;
 
     try {
       const comparisonBase64 = await fileToBase64(comparisonUI.file);
 
-      // Step 1: Visual Regressions Check
-      if (selectedChecks.visualRegressions) {
+      // Step 1: Visual Regressions Check (Compulsory)
+      setProgressChecks(prev => prev.map(check => 
+        check.id === 'visualRegressions' 
+          ? { ...check, status: 'loading' } 
+          : check
+      ));
+
+      try {
+        const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://127.0.0.1:8000';
+        const response = await fetch(`${backendUrl}/visualregressions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            image: comparisonBase64,
+          }),
+        });
+
+        const result = await response.json();
+        console.log('Visual Regression result:', result);
+        visualRegressionData = result;
+        setVisualRegressionResults(result);
+
         setProgressChecks(prev => prev.map(check => 
           check.id === 'visualRegressions' 
-            ? { ...check, status: 'loading' } 
+            ? { ...check, status: 'completed' } 
             : check
         ));
-
-        try {
-          const response = await fetch('http://127.0.0.1:8000/visualregressions', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              image: comparisonBase64,
-            }),
-          });
-
-          const result = await response.json();
-          console.log('Visual Regression result:', result);
-          setVisualRegressionResults(result);
-
-          setProgressChecks(prev => prev.map(check => 
-            check.id === 'visualRegressions' 
-              ? { ...check, status: 'completed' } 
-              : check
-          ));
-        } catch (error) {
-          console.error('Error in visual regressions check:', error);
-          alert('Error checking visual regressions. Please try again.');
-          setIsValidating(false);
-          return;
-        }
+      } catch (error) {
+        console.error('Error in visual regressions check:', error);
+        alert('Error checking visual regressions. Please try again.');
+        setIsValidating(false);
+        return;
       }
 
-      // Step 2: UI Comparison Check
-      if (selectedChecks.missingElements) {
+      // Step 2: UI Comparison Check (Compulsory)
+      setProgressChecks(prev => prev.map(check => 
+        check.id === 'missingElements' 
+          ? { ...check, status: 'loading' } 
+          : check
+      ));
+
+      try {
+        const formData = new FormData();
+        formData.append('baseline_image', referenceUI.file);
+        formData.append('comparison_image', comparisonUI.file);
+        formData.append('tolerance', '5');
+        formData.append('test_description', 'UI comparison for missing elements and layout shifts');
+
+        const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://127.0.0.1:8000';
+        const response = await fetch(`${backendUrl}/uicomparison`, {
+          method: 'POST',
+          body: formData,
+        });
+
+        const result = await response.json();
+        console.log('UI Comparison result:', result);
+        uiComparisonData = result;
+        setUIComparisonResults(result);
+
         setProgressChecks(prev => prev.map(check => 
           check.id === 'missingElements' 
-            ? { ...check, status: 'loading' } 
+            ? { ...check, status: 'completed' } 
             : check
         ));
-
-        try {
-          const formData = new FormData();
-          formData.append('baseline_image', referenceUI.file);
-          formData.append('comparison_image', comparisonUI.file);
-          formData.append('tolerance', '5');
-          formData.append('test_description', 'UI comparison for missing elements and layout shifts');
-
-          const response = await fetch('http://127.0.0.1:8000/uicomparison', {
-            method: 'POST',
-            body: formData,
-          });
-
-          const result = await response.json();
-          console.log('UI Comparison result:', result);
-          setUIComparisonResults(result);
-
-          setProgressChecks(prev => prev.map(check => 
-            check.id === 'missingElements' 
-              ? { ...check, status: 'completed' } 
-              : check
-          ));
-        } catch (error) {
-          console.error('Error in UI comparison check:', error);
-          alert('Error checking missing elements. Please try again.');
-          setIsValidating(false);
-          return;
-        }
+      } catch (error) {
+        console.error('Error in UI comparison check:', error);
+        alert('Error checking missing elements. Please try again.');
+        setIsValidating(false);
+        return;
       }
+
+      // Step 3: Upload images to Cloudinary
+      console.log('Uploading images to Cloudinary...');
+      const referenceImageData = await uploadImagesToCloudinary([{ file: referenceUI.file }]);
+      const comparisonImageData = await uploadImagesToCloudinary([{ file: comparisonUI.file }]);
+      
+      console.log('Images uploaded successfully');
+
+      // Step 4: Save to Firestore
+      console.log('Saving UI validation to Firestore...');
+      const checksPerformed = ['visualRegressions', 'missingElements']; // Both are compulsory
+
+      const validationData = {
+        referenceImage: referenceImageData[0],
+        comparisonImage: comparisonImageData[0],
+        visualRegressionResults: visualRegressionData,
+        uiComparisonResults: uiComparisonData,
+        checksPerformed: checksPerformed,
+      };
+
+      const docId = await saveUIValidation(
+        validationData,
+        currentUser.uid,
+        projectId
+      );
+      console.log('Saved to Firestore with ID:', docId);
 
     } catch (error) {
       console.error('Error validating UI:', error);
@@ -264,7 +316,19 @@ const VisualQATab = () => {
     return (
       <div className="p-8 bg-gray-900 min-h-screen">
         <div className="bg-gray-800 rounded-xl shadow-sm border border-gray-700 p-8">
-          <h2 className="text-2xl font-bold text-white mb-6">Validate User Interface</h2>
+          {/* Header with History Button */}
+          <div className="flex items-center justify-between mb-6">
+            <h2 className="text-2xl font-bold text-white">Validate User Interface</h2>
+            <button
+              onClick={() => setShowUIHistoryModal(true)}
+              className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors border border-gray-600 hover:border-blue-500"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              History
+            </button>
+          </div>
           
           {/* Upload Sections */}
           <div className="grid grid-cols-2 gap-6 mb-8">
@@ -347,33 +411,15 @@ const VisualQATab = () => {
             </div>
           </div>
 
-          {/* Check Options - Only show if not validating */}
+          {/* Checks Info - Only show if not validating */}
           {!isValidating && progressChecks.length === 0 && (
             <>
               <div className="mb-8">
-                <h3 className="text-lg font-semibold text-white mb-4">Select Checks</h3>
+                <h3 className="text-lg font-semibold text-white mb-4">Validation Checks</h3>
                 <div className="space-y-4">
                   {/* Visual Regressions Check */}
-                  <div
-                    onClick={() => handleCheckToggle('visualRegressions')}
-                    className={`border-2 rounded-lg p-4 cursor-pointer transition-all ${
-                      selectedChecks.visualRegressions
-                        ? 'border-blue-400 bg-blue-900/30'
-                        : 'border-gray-600 hover:border-gray-500 bg-gray-700'
-                    }`}
-                  >
+                  <div className="border-2 border-gray-600 rounded-lg p-4 bg-gray-700">
                     <div className="flex items-start gap-3">
-                      <div className={`w-5 h-5 rounded border-2 flex items-center justify-center mt-0.5 ${
-                        selectedChecks.visualRegressions
-                          ? 'bg-blue-500 border-blue-500'
-                          : 'border-gray-500'
-                      }`}>
-                        {selectedChecks.visualRegressions && (
-                          <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-                          </svg>
-                        )}
-                      </div>
                       <div className="flex-1">
                         <h4 className="font-semibold text-white mb-1">1. Detect visual regressions</h4>
                         <p className="text-sm text-gray-300">Wanna check any broken elements or overlap in UI?</p>
@@ -382,26 +428,8 @@ const VisualQATab = () => {
                   </div>
 
                   {/* Missing Elements Check */}
-                  <div
-                    onClick={() => handleCheckToggle('missingElements')}
-                    className={`border-2 rounded-lg p-4 cursor-pointer transition-all ${
-                      selectedChecks.missingElements
-                        ? 'border-blue-400 bg-blue-900/30'
-                        : 'border-gray-600 hover:border-gray-500 bg-gray-700'
-                    }`}
-                  >
+                  <div className="border-2 border-gray-600 rounded-lg p-4 bg-gray-700">
                     <div className="flex items-start gap-3">
-                      <div className={`w-5 h-5 rounded border-2 flex items-center justify-center mt-0.5 ${
-                        selectedChecks.missingElements
-                          ? 'bg-blue-500 border-blue-500'
-                          : 'border-gray-500'
-                      }`}>
-                        {selectedChecks.missingElements && (
-                          <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-                          </svg>
-                        )}
-                      </div>
                       <div className="flex-1">
                         <h4 className="font-semibold text-white mb-1">2. Missing elements / layout shifts</h4>
                         <p className="text-sm text-gray-300">Wanna check missing elements / layout shifts?</p>
@@ -455,7 +483,6 @@ const VisualQATab = () => {
                     setActiveMode(null);
                     setReferenceUI(null);
                     setComparisonUI(null);
-                    setSelectedChecks({ visualRegressions: false, missingElements: false });
                     setProgressChecks([]);
                     setVisualRegressionResults(null);
                     setUIComparisonResults(null);
@@ -468,6 +495,13 @@ const VisualQATab = () => {
             </div>
           )}
         </div>
+
+        {/* UI History Modal */}
+        <UIValidationHistoryModal
+          projectId={projectId}
+          isOpen={showUIHistoryModal}
+          onClose={() => setShowUIHistoryModal(false)}
+        />
       </div>
     );
   }
@@ -476,7 +510,19 @@ const VisualQATab = () => {
     return (
       <div className="p-8 bg-gray-900 min-h-screen">
         <div className="bg-gray-800 rounded-xl shadow-sm border border-gray-700 p-8">
-          <h2 className="text-2xl font-bold text-white mb-6">Upload UX Flow Screens</h2>
+          {/* Header with History Button */}
+          <div className="flex items-center justify-between mb-6">
+            <h2 className="text-2xl font-bold text-white">Upload UX Flow Screens</h2>
+            <button
+              onClick={() => setShowHistoryModal(true)}
+              className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors border border-gray-600 hover:border-blue-500"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              History
+            </button>
+          </div>
           
           {/* Upload Area */}
           <div className="mb-6">
@@ -882,6 +928,13 @@ const VisualQATab = () => {
             </div>
           )}
         </div>
+
+        {/* History Modal */}
+        <UXValidationHistoryModal
+          projectId={projectId}
+          isOpen={showHistoryModal}
+          onClose={() => setShowHistoryModal(false)}
+        />
       </div>
     );
   }
@@ -923,6 +976,13 @@ const VisualQATab = () => {
           </div>
         </div>
       </div>
+
+      {/* History Modal */}
+      <UXValidationHistoryModal
+        projectId={projectId}
+        isOpen={showHistoryModal}
+        onClose={() => setShowHistoryModal(false)}
+      />
     </div>
   );
 };
