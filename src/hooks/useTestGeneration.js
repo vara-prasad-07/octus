@@ -1,15 +1,38 @@
 ﻿import { useState, useCallback } from 'react';
-import { generateTests, listSuites, deleteSuite, exportSuite } from '../api/testGenApi';
+import { useAuth } from '../contexts/AuthContext';
+import { generateTests, deleteSuite, exportSuite } from '../api/testGenApi';
+import {
+    deleteTestSuiteHistory,
+    getProjectTestSuiteHistory,
+    saveGeneratedSuiteHistory,
+} from '../services/testGenerationHistoryService';
 
 /**
  * Custom hook encapsulating test generation state and actions.
  * Handles loading, errors, suite data, and history.
  */
 export function useTestGeneration(projectId = null) {
+    const { currentUser } = useAuth();
     const [suite, setSuite] = useState(null);
     const [history, setHistory] = useState([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
+
+    const loadHistory = useCallback(async () => {
+        if (!projectId) {
+            setHistory([]);
+            return;
+        }
+
+        try {
+            const data = await getProjectTestSuiteHistory(projectId);
+            setHistory(Array.isArray(data) ? data : []);
+        } catch (historyError) {
+            const msg = historyError.message || 'Failed to load test history';
+            setError(msg);
+            setHistory([]);
+        }
+    }, [projectId]);
 
     const generate = useCallback(async (formData) => {
         setLoading(true);
@@ -29,9 +52,19 @@ export function useTestGeneration(projectId = null) {
                 github_file_path: formData.githubFilePath,
                 github_token: formData.githubToken,
             };
+
             const { data } = await generateTests(payload);
-            setSuite(data);
-            return data;
+            const { historyId } = await saveGeneratedSuiteHistory({
+                projectId,
+                ownerId: currentUser?.uid || null,
+                generationPayload: payload,
+                suiteData: data,
+            });
+
+            const enrichedSuite = { ...data, _history_id: historyId };
+            setSuite(enrichedSuite);
+            await loadHistory();
+            return enrichedSuite;
         } catch (err) {
             const msg =
                 err.response?.data?.detail || err.message || 'Generation failed';
@@ -40,22 +73,34 @@ export function useTestGeneration(projectId = null) {
         } finally {
             setLoading(false);
         }
-    }, [projectId]);
+    }, [currentUser?.uid, loadHistory, projectId]);
 
-    const loadHistory = useCallback(async () => {
-        try {
-            const { data } = await listSuites(projectId);
-            setHistory(Array.isArray(data) ? data : []);
-        } catch {
-            // non-critical ÔÇö silently fail
+    const removeSuite = useCallback(async (suiteId, historyId = null) => {
+        if (!suiteId && !historyId) {
+            throw new Error('Suite ID or history ID is required');
         }
-    }, [projectId]);
 
-    const removeSuite = useCallback(async (suiteId) => {
-        await deleteSuite(suiteId);
-        setHistory((prev) => prev.filter((s) => s.suite_id !== suiteId));
-        if (suite?.suite_id === suiteId) setSuite(null);
-    }, [suite]);
+        if (suiteId) {
+            await deleteSuite(suiteId);
+        }
+
+        await deleteTestSuiteHistory({
+            projectId,
+            suiteId: suiteId || null,
+            suiteHistoryId: historyId,
+        });
+
+        setHistory((prev) =>
+            prev.filter((item) => {
+                if (historyId) return item._history_id !== historyId;
+                return item.suite_id !== suiteId;
+            })
+        );
+
+        if ((suiteId && suite?.suite_id === suiteId) || (historyId && suite?._history_id === historyId)) {
+            setSuite(null);
+        }
+    }, [projectId, suite]);
 
     const handleExport = useCallback(async (suiteId, format) => {
         const { data } = await exportSuite(suiteId, format);
