@@ -24,11 +24,6 @@ export default defineConfig({
         target: 'https://threerd-back.onrender.com',
         changeOrigin: true,
         secure: false,
-      },
-      '/planning': {
-        target: 'https://threerd-back.onrender.com',
-        changeOrigin: true,
-        secure: false,
       }
     }
   }

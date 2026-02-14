@@ -1,6 +1,6 @@
-﻿import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useTestGeneration } from '../../hooks/useTestGeneration';
-import axios from 'axios';
+import { aiTestGenApi } from '../../api/aiTestGenClient';
 import {
   Sparkles, ChevronDown, ChevronRight, Download, FileJson, FileText,
   FileSpreadsheet, Code2, Trash2, AlertCircle, CheckCircle2, Clock,
@@ -59,7 +59,7 @@ const TestGenerationTab = ({ projectId }) => {
     setRunLoading(true);
     setRunStatus({ status: 'queued', conclusion: null });
     try {
-      const { data } = await axios.post(
+      const { data } = await aiTestGenApi.post(
         `/tests/${suite.suite_id}/run?repo=${encodeURIComponent(ghSelectedRepo)}&token=${encodeURIComponent(ghToken)}`
       );
       setRunStatus(data);
@@ -73,7 +73,7 @@ const TestGenerationTab = ({ projectId }) => {
   const pollRunStatus = (runId) => {
     const interval = setInterval(async () => {
       try {
-        const { data } = await axios.get(
+        const { data } = await aiTestGenApi.get(
           `/tests/runs/${runId}/status?repo=${encodeURIComponent(ghSelectedRepo)}&token=${encodeURIComponent(ghToken)}`
         );
         setRunStatus(data);
@@ -107,14 +107,14 @@ const TestGenerationTab = ({ projectId }) => {
 
   const connectGitHub = async () => {
     try {
-      const { data } = await axios.get('/auth/github/login');
+      const { data } = await aiTestGenApi.get('/auth/github/login');
       const popup = window.open(data.url, 'github-oauth', 'width=600,height=700');
 
       const handleMessage = async (event) => {
         if (event.data?.type === 'github-oauth-callback' && event.data?.code) {
           window.removeEventListener('message', handleMessage);
           try {
-            const { data: tokenData } = await axios.get(`/auth/github/callback?code=${event.data.code}`);
+            const { data: tokenData } = await aiTestGenApi.get(`/auth/github/callback?code=${event.data.code}`);
             if (tokenData.access_token) {
               setGhToken(tokenData.access_token);
               localStorage.setItem('gh_token', tokenData.access_token);
@@ -143,7 +143,7 @@ const TestGenerationTab = ({ projectId }) => {
     if (!ghToken) return;
     setGhLoadingRepos(true);
     try {
-      const { data } = await axios.get('/github/repos', { params: { token: ghToken } });
+      const { data } = await aiTestGenApi.get('/github/repos', { params: { token: ghToken } });
       setGhRepos(data);
     } catch { setGhRepos([]); }
     finally { setGhLoadingRepos(false); }
@@ -158,7 +158,7 @@ const TestGenerationTab = ({ projectId }) => {
       const [owner, repo] = repoFullName.split('/');
       const selectedRepo = ghRepos.find(r => r.full_name === repoFullName);
       const branch = selectedRepo?.default_branch || 'main';
-      const { data } = await axios.get(`/github/repos/${owner}/${repo}/tree`, {
+      const { data } = await aiTestGenApi.get(`/github/repos/${owner}/${repo}/tree`, {
         params: { token: ghToken, branch },
       });
       setGhFiles(data);
