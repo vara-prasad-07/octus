@@ -1,14 +1,8 @@
-﻿/**
+/**
  * API client for the TestGen AI backend.
- * All requests are proxied through Vite (/tests ÔåÆ http://localhost:8000/tests).
+ * Requests are scoped to the dedicated AI test generation backend.
  */
-import axios from 'axios';
-
-const api = axios.create({
-  baseURL: '/tests',
-  headers: { 'Content-Type': 'application/json' },
-  timeout: 120_000, // AI generation can take up to 2 minutes
-});
+import { aiTestGenTestsApi as api } from './aiTestGenClient';
 
 /**
  * POST /tests/generate
