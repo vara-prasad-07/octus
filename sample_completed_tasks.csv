@@ -1,0 +1,4 @@
+Feature Name,Module,Due Date,Velocity,Bugs,Status
+User registration flow,Authentication,2026-02-10,8,1,done
+Settings page UI,Dashboard,2026-02-08,5,0,done
+Database schema migration,Backend,2026-02-12,13,2,done

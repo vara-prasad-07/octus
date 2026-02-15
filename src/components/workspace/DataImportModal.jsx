@@ -22,13 +22,14 @@ const DataImportModal = ({ onClose, onImport, projectId }) => {
         const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
         const jsonData = XLSX.utils.sheet_to_json(firstSheet);
 
-        // Convert to task format
+        // Convert to task format - support both old and new column names
         const tasks = jsonData.map((row, index) => ({
-          name: row.name || row.task || row.Task || row.Name || `Task ${index + 1}`,
-          assignee: row.assignee || row.Assignee || '',
-          dueDate: formatDateForBackend(row.dueDate || row['Due Date'] || row['due date'] || ''),
-          storyPoints: row.storyPoints || row.points || row.Points || 0,
-          status: row.status || row.Status || 'todo',
+          name: row['Feature Name'] || row.name || row.task || row.Task || row.Name || `Task ${index + 1}`,
+          module: row.Module || row.module || '',
+          dueDate: formatDateForBackend(row['Due Date'] || row.dueDate || row['due date'] || ''),
+          velocity: parseInt(row.Velocity || row.velocity || row.storyPoints || row.points || row.Points || 0),
+          bugs: parseInt(row.Bugs || row.bugs || 0),
+          status: (row.Status || row.status || 'todo').toLowerCase(),
           projectId
         }));
 
@@ -44,23 +45,24 @@ const DataImportModal = ({ onClose, onImport, projectId }) => {
 
   const handleManualParse = () => {
     try {
-      // Parse manual input (expecting CSV-like format or JSON)
+      // Parse manual input (expecting CSV-like format)
       const lines = manualData.trim().split('\n');
       const tasks = lines.map((line, index) => {
         const parts = line.split(',').map(p => p.trim());
         return {
           name: parts[0] || `Task ${index + 1}`,
-          assignee: parts[1] || '',
+          module: parts[1] || '',
           dueDate: parts[2] || '',
-          storyPoints: parseInt(parts[3]) || 0,
-          status: parts[4] || 'todo',
+          velocity: parseInt(parts[3]) || 0,
+          bugs: parseInt(parts[4]) || 0,
+          status: (parts[5] || 'todo').toLowerCase(),
           projectId
         };
       });
       setParsedTasks(tasks);
     } catch (error) {
       console.error('Error parsing manual data:', error);
-      alert('Error parsing data. Use format: Task Name, Assignee, Due Date, Points, Status');
+      alert('Error parsing data. Use format: Feature Name, Module, Due Date, Velocity, Bugs, Status');
     }
   };
 
@@ -124,14 +126,14 @@ const DataImportModal = ({ onClose, onImport, projectId }) => {
           <div className="space-y-4">
             <div>
               <label className="block text-sm font-medium text-dark-200 mb-2">
-                Enter tasks (one per line: Name, Assignee, Due Date, Points, Status)
+                Enter tasks (one per line: Feature Name, Module, Due Date, Velocity, Bugs, Status)
               </label>
               <textarea
                 value={manualData}
                 onChange={(e) => setManualData(e.target.value)}
                 rows="8"
                 className="w-full px-4 py-3 bg-dark-800 border-2 border-dark-700 rounded-xl placeholder-dark-500 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all resize-none"
-                placeholder="Implement login, John Doe, 2024-03-15, 5, todo&#10;Create dashboard, Jane Smith, 2024-03-20, 8, in-progress"
+                placeholder="User authentication flow, Login Page, 2026-02-20, 13, 2, in-progress&#10;Dashboard analytics widget, Dashboard, 2026-02-22, 8, 0, in-progress"
                 style={{ 
                   color: '#ffffff',
                   WebkitTextFillColor: '#ffffff',
@@ -169,7 +171,7 @@ const DataImportModal = ({ onClose, onImport, projectId }) => {
                   {file ? file.name : `Click to upload ${importMethod.toUpperCase()}`}
                 </p>
                 <p className="text-dark-400 text-sm">
-                  Expected columns: name, assignee, dueDate, storyPoints, status
+                  Expected columns: Feature Name, Module, Due Date, Velocity, Bugs, Status
                 </p>
               </label>
             </div>
@@ -186,7 +188,7 @@ const DataImportModal = ({ onClose, onImport, projectId }) => {
                   <div className="flex-1">
                     <div className="text-white font-medium">{task.name}</div>
                     <div className="text-dark-400 text-sm">
-                      {task.assignee} • {task.dueDate} • {task.storyPoints} pts
+                      {task.module} • {task.dueDate} • {task.velocity} velocity • {task.bugs} bugs
                     </div>
                   </div>
                   <span className="px-2 py-1 bg-primary-500/10 text-primary-400 rounded text-xs">
