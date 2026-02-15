@@ -1,0 +1,6 @@
+Feature Name,Module,Due Date,Velocity,Bugs,Status
+User authentication flow,Login Page,2026-02-20,13,2,in-progress
+Dashboard analytics widget,Dashboard,2026-02-22,8,0,in-progress
+Password reset functionality,Login Page,2026-02-25,8,3,todo
+API rate limiting,Backend API,2026-02-24,13,0,todo
+Email notification system,Backend API,2026-02-28,13,1,todo

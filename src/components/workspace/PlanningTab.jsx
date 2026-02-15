@@ -18,18 +18,19 @@ const PlanningTab = ({ projectId }) => {
   const [editingCell, setEditingCell] = useState(null); // { taskId, field }
   const [editValue, setEditValue] = useState('');
   const [columns, setColumns] = useState([
-    { id: 'name', label: 'Task Name', type: 'text', required: true, editable: true },
-    { id: 'assignee', label: 'Assignee', type: 'text', required: false, editable: true },
+    { id: 'name', label: 'Feature Name', type: 'text', required: true, editable: true },
+    { id: 'module', label: 'Module', type: 'text', required: false, editable: true },
     { id: 'dueDate', label: 'Due Date', type: 'date', required: false, editable: true },
-    { id: 'storyPoints', label: 'Story Points', type: 'number', required: false, editable: true },
-    { id: 'risk', label: 'Risk', type: 'calculated', required: false, editable: false },
+    { id: 'velocity', label: 'Velocity', type: 'number', required: false, editable: true },
+    { id: 'bugs', label: 'Bugs', type: 'number', required: false, editable: true },
     { id: 'status', label: 'Status', type: 'select', required: false, editable: true }
   ]);
   const [formData, setFormData] = useState({
     name: '',
-    assignee: '',
+    module: '',
     dueDate: '',
-    storyPoints: '',
+    velocity: '',
+    bugs: 0,
     status: 'todo'
   });
 
@@ -152,8 +153,25 @@ const PlanningTab = ({ projectId }) => {
     const value = task[column.id];
     const isEditing = editingCell?.taskId === task.id && editingCell?.field === column.id;
 
-    if (column.id === 'risk') {
-      return getRiskBadge(task.storyPoints);
+    if (column.id === 'bugs') {
+      const bugCount = value || 0;
+      return (
+        <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${
+          bugCount === 0 ? 'bg-green-500/10 text-green-400' :
+          bugCount <= 2 ? 'bg-yellow-500/10 text-yellow-400' :
+          'bg-red-500/10 text-red-400'
+        }`}>
+          {bugCount}
+        </span>
+      );
+    }
+
+    if (column.id === 'module' && !isEditing) {
+      return (
+        <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-slate-700/50 text-slate-300">
+          {value || 'No Module'}
+        </span>
+      );
     }
 
     if (column.id === 'status') {
@@ -174,12 +192,6 @@ const PlanningTab = ({ projectId }) => {
         );
       }
       return getStatusBadge(value);
-    }
-
-    if (column.id === 'assignee' && !isEditing) {
-      return (
-        <span className="text-sm text-slate-200">{value || 'Unassigned'}</span>
-      );
     }
 
     // Handle date display
@@ -205,7 +217,7 @@ const PlanningTab = ({ projectId }) => {
           onBlur={() => saveInlineEdit(task.id)}
           onKeyDown={(e) => handleKeyPress(e, task.id)}
           autoFocus
-          min={column.type === 'percentage' ? 0 : undefined}
+          min={column.type === 'percentage' ? 0 : column.type === 'number' ? 0 : undefined}
           max={column.type === 'percentage' ? 100 : undefined}
           className="w-full px-2 py-1 bg-slate-800 border-2 border-slate-600 rounded text-white focus:outline-none"
           style={{ 
@@ -252,24 +264,86 @@ const PlanningTab = ({ projectId }) => {
   };
 
   const avgRisk = tasks.length > 0 ? Math.floor(tasks.reduce((acc, t) => acc + getRiskScore(t.storyPoints), 0) / tasks.length) : 0;
-  const highRiskTasks = tasks.filter(t => getRiskScore(t.storyPoints) > 70).length;
   const totalTasks = tasks.length;
   const completedTasks = tasks.filter(t => t.status === 'done').length;
   const inProgressTasks = tasks.filter(t => t.status === 'in-progress').length;
   
-  // Calculate velocity (story points completed)
-  const completedStoryPoints = tasks
+  // Calculate velocity (sum of all feature velocities)
+  const completedVelocity = tasks
     .filter(t => t.status === 'done')
-    .reduce((acc, t) => acc + (parseInt(t.storyPoints) || 0), 0);
+    .reduce((acc, t) => acc + (parseInt(t.velocity) || 0), 0);
   
-  const totalStoryPoints = tasks.reduce((acc, t) => acc + (parseInt(t.storyPoints) || 0), 0);
+  const totalVelocity = tasks.reduce((acc, t) => acc + (parseInt(t.velocity) || 0), 0);
   
-  const velocityPercentage = totalStoryPoints > 0 
-    ? Math.floor((completedStoryPoints / totalStoryPoints) * 100) 
+  const velocityPercentage = totalVelocity > 0 
+    ? Math.floor((completedVelocity / totalVelocity) * 100) 
     : 0;
   
-  // Calculate predicted delay based on high-risk tasks
-  const predictedDelay = Math.floor(highRiskTasks * 0.5); // Each high-risk task adds 0.5 days delay
+  // Calculate Predicted Delay using the formula:
+  // PredictedDelay = max(0, RemainingWork + BugImpact - DaysLeft)
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  
+  const predictedDelay = tasks.reduce((totalDelay, task) => {
+    if (task.status === 'done') return totalDelay;
+    
+    const remainingWork = parseInt(task.velocity) || 0;
+    const bugs = parseInt(task.bugs) || 0;
+    const bugImpact = bugs * 0.5;
+    
+    // Calculate days left until due date
+    let daysLeft = 0;
+    if (task.dueDate) {
+      const dueDate = new Date(task.dueDate);
+      dueDate.setHours(0, 0, 0, 0);
+      const diffTime = dueDate - today;
+      daysLeft = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    }
+    
+    const taskDelay = Math.max(0, remainingWork + bugImpact - daysLeft);
+    
+    // Debug log
+    if (taskDelay > 0) {
+      console.log(`Task: ${task.name}`);
+      console.log(`  Velocity: ${remainingWork}, Bugs: ${bugs}, DaysLeft: ${daysLeft}`);
+      console.log(`  Delay: ${taskDelay} days`);
+    }
+    
+    return totalDelay + taskDelay;
+  }, 0);
+  
+  // Calculate High-Risk Tasks using the formula:
+  // RiskScore = (Velocity × 0.4) + (Bugs × 2) + (OverdueDays × 3)
+  // High Risk if RiskScore > 10
+  const highRiskTasks = tasks.filter(task => {
+    if (task.status === 'done') return false;
+    
+    const velocity = parseInt(task.velocity) || 0;
+    const bugs = parseInt(task.bugs) || 0;
+    
+    // Calculate overdue days
+    let overdueDays = 0;
+    if (task.dueDate) {
+      const dueDate = new Date(task.dueDate);
+      dueDate.setHours(0, 0, 0, 0);
+      const diffTime = today - dueDate;
+      overdueDays = Math.max(0, Math.ceil(diffTime / (1000 * 60 * 60 * 24)));
+    }
+    
+    const riskScore = (velocity * 0.4) + (bugs * 2) + (overdueDays * 3);
+    
+    // Debug log
+    if (riskScore > 10) {
+      console.log(`High Risk Task: ${task.name}`);
+      console.log(`  Velocity: ${velocity}, Bugs: ${bugs}, Overdue: ${overdueDays} days`);
+      console.log(`  Risk Score: ${riskScore.toFixed(1)}`);
+    }
+    
+    return riskScore > 10;
+  }).length;
+  
+  console.log(`Total Predicted Delay: ${Math.round(predictedDelay)} days`);
+  console.log(`High-Risk Tasks: ${highRiskTasks}`);
 
   if (loading) return (
     <div className="flex items-center justify-center h-full">
@@ -283,22 +357,7 @@ const PlanningTab = ({ projectId }) => {
   return (
     <div className="p-8">
       {/* KPI Cards */}
-      <div className="grid grid-cols-5 gap-6 mb-8">
-        <div className="bg-slate-800/40 backdrop-blur-sm border border-slate-700/50 rounded-2xl p-6 hover-lift">
-          <div className="flex items-center justify-between mb-3">
-            <div className="text-sm font-medium text-slate-400">Overall Risk Score</div>
-            <div className="w-10 h-10 bg-warning-500/10 rounded-xl flex items-center justify-center">
-              <svg className="w-5 h-5 text-warning-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-              </svg>
-            </div>
-          </div>
-          <div className="text-4xl font-bold text-white mb-2">{avgRisk}</div>
-          <div className={`text-sm font-medium ${avgRisk > 70 ? 'text-danger-500' : avgRisk > 40 ? 'text-warning-500' : 'text-success-500'}`}>
-            {avgRisk > 70 ? 'High Risk' : avgRisk > 40 ? 'Moderate Risk' : 'Low Risk'}
-          </div>
-        </div>
-
+      <div className="grid grid-cols-4 gap-6 mb-8">
         <div className="bg-slate-800/40 backdrop-blur-sm border border-slate-700/50 rounded-2xl p-6 hover-lift">
           <div className="flex items-center justify-between mb-3">
             <div className="text-sm font-medium text-slate-400">Team Velocity</div>
@@ -308,9 +367,9 @@ const PlanningTab = ({ projectId }) => {
               </svg>
             </div>
           </div>
-          <div className="text-4xl font-bold text-slate-200 mb-2">{completedStoryPoints}</div>
+          <div className="text-4xl font-bold text-slate-200 mb-2">{completedVelocity}</div>
           <div className="text-sm font-medium text-slate-400">
-            of {totalStoryPoints} points ({velocityPercentage}%)
+            of {totalVelocity} points ({velocityPercentage}%)
           </div>
         </div>
 
@@ -323,7 +382,7 @@ const PlanningTab = ({ projectId }) => {
               </svg>
             </div>
           </div>
-          <div className="text-4xl font-bold text-danger-500 mb-2">+{predictedDelay}</div>
+          <div className="text-4xl font-bold text-danger-500 mb-2">+{Math.round(predictedDelay)}</div>
           <div className="text-sm font-medium text-slate-400">days</div>
         </div>
 
@@ -365,23 +424,13 @@ const PlanningTab = ({ projectId }) => {
           <div className="flex-1">
             <div className="flex items-center space-x-2 mb-2">
               <h3 className="text-lg font-semibold text-white">AI Project Health Summary</h3>
-              <span className="px-2 py-1 bg-slate-800/30 text-slate-400 rounded-lg text-xs font-semibold">Live Analysis</span>
+              <span className="px-2 py-1 bg-slate-800/30 text-slate-400 rounded-lg text-xs font-semibold">Click AI Analyze</span>
             </div>
             <p className="text-slate-200 leading-relaxed">
               {totalTasks === 0 ? (
                 'No tasks yet. Add tasks to get AI-powered insights and recommendations.'
               ) : (
-                <>
-                  Project is at <span className={`font-semibold ${avgRisk > 70 ? 'text-danger-500' : avgRisk > 40 ? 'text-warning-500' : 'text-success-500'}`}>
-                    {avgRisk > 70 ? 'High' : avgRisk > 40 ? 'Moderate' : 'Low'} Risk ({avgRisk}%)
-                  </span>.
-                  {' '}Team velocity: <span className="text-slate-400 font-semibold">{completedStoryPoints}/{totalStoryPoints} points</span> completed ({velocityPercentage}%).
-                  {highRiskTasks > 0 && <> <span className="text-danger-500 font-semibold">{highRiskTasks} tasks</span> likely to slip.</>}
-                  {' '}
-                  {completedTasks > 0 && <span className="text-success-500 font-semibold">{completedTasks} completed</span>}
-                  {inProgressTasks > 0 && <>, <span className="text-slate-400 font-semibold">{inProgressTasks} in progress</span></>}.
-                  {highRiskTasks > 2 && ' Recommended to reprioritize high-complexity items and review resource allocation.'}
-                </>
+                'Click "AI Analyze" button to get intelligent insights about your sprint health, velocity trends, risk predictions, and comparison with previous completed tasks.'
               )}
             </p>
           </div>
@@ -412,7 +461,7 @@ const PlanningTab = ({ projectId }) => {
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
               </svg>
-              <span>AI Analysis</span>
+              <span>AI Analyze</span>
             </button>
             <button
               onClick={() => setShowImportModal(true)}
@@ -459,7 +508,7 @@ const PlanningTab = ({ projectId }) => {
                       key={column.id}
                       className={`px-6 py-4 text-sm ${column.editable ? 'cursor-pointer' : ''} ${
                         column.id === 'name' ? 'font-medium text-white' : 
-                        column.id === 'storyPoints' ? 'font-semibold text-white' : 
+                        column.id === 'velocity' ? 'font-semibold text-white' : 
                         'text-slate-300'
                       }`}
                       onClick={() => column.editable && editingCell?.taskId !== task.id && startEditing(task.id, column.id, task[column.id])}
@@ -517,101 +566,93 @@ const PlanningTab = ({ projectId }) => {
       {/* Task Modal */}
       {showModal && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 px-4">
-          <div className="bg-slate-800/40 backdrop-blur-sm border border-slate-700/50 rounded-2xl shadow-2xl p-8 max-w-lg w-full animate-slide-up">
-            <h2 className="text-2xl font-bold text-white mb-6">{editingTask ? 'Edit Task' : 'Create Task'}</h2>
-            <form onSubmit={handleSubmit} className="space-y-5">
+          <div className="bg-slate-900 border border-slate-700/50 rounded-2xl shadow-2xl p-8 max-w-lg w-full">
+            <h2 className="text-2xl font-bold text-white mb-6">{editingTask ? 'Edit Feature' : 'Add Feature'}</h2>
+            <form onSubmit={handleSubmit} className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-slate-200 mb-2">Task Name</label>
+                <label className="block text-sm font-medium text-slate-300 mb-2">Feature Name</label>
                 <input
                   type="text"
                   value={formData.name}
                   onChange={(e) => setFormData({ ...formData, name: e.target.value })}
                   required
-                  className="w-full px-4 py-3 bg-slate-800 border-2 border-slate-700 rounded-xl placeholder-dark-500 focus:ring-2 focus:ring-primary-500 focus:border-slate-600 transition-all"
-                  placeholder="Implement user authentication"
-                  style={{ 
-                    color: '#ffffff',
-                    WebkitTextFillColor: '#ffffff',
-                    caretColor: '#ffffff'
-                  }}
+                  className="w-full px-4 py-2.5 bg-slate-800/50 border border-slate-700 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500"
+                  placeholder="e.g., User authentication system"
                 />
               </div>
+
               <div>
-                <label className="block text-sm font-medium text-slate-200 mb-2">Assignee</label>
+                <label className="block text-sm font-medium text-slate-300 mb-2">Module</label>
                 <input
                   type="text"
-                  value={formData.assignee}
-                  onChange={(e) => setFormData({ ...formData, assignee: e.target.value })}
-                  className="w-full px-4 py-3 bg-slate-800 border-2 border-slate-700 rounded-xl placeholder-dark-500 focus:ring-2 focus:ring-primary-500 focus:border-slate-600 transition-all"
-                  placeholder="John Doe"
-                  style={{ 
-                    color: '#ffffff',
-                    WebkitTextFillColor: '#ffffff',
-                    caretColor: '#ffffff'
-                  }}
+                  value={formData.module}
+                  onChange={(e) => setFormData({ ...formData, module: e.target.value })}
+                  className="w-full px-4 py-2.5 bg-slate-800/50 border border-slate-700 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500"
+                  placeholder="e.g., Login Page, Dashboard, API"
                 />
               </div>
-              <div className="grid grid-cols-2 gap-4">
+              
+              <div className="grid grid-cols-3 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-slate-200 mb-2">Due Date</label>
-                  <input
-                    type="date"
-                    value={formatDateForInput(formData.dueDate)}
-                    onChange={(e) => setFormData({ ...formData, dueDate: e.target.value })}
-                    className="w-full px-4 py-3 bg-slate-800 border-2 border-slate-700 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-slate-600 transition-all"
-                    style={{ 
-                      color: '#ffffff',
-                      WebkitTextFillColor: '#ffffff',
-                      caretColor: '#ffffff',
-                      colorScheme: 'dark'
-                    }}
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-200 mb-2">Story Points</label>
+                  <label className="block text-sm font-medium text-slate-300 mb-2">Velocity</label>
                   <input
                     type="number"
-                    value={formData.storyPoints}
-                    onChange={(e) => setFormData({ ...formData, storyPoints: e.target.value })}
-                    className="w-full px-4 py-3 bg-slate-800 border-2 border-slate-700 rounded-xl placeholder-dark-500 focus:ring-2 focus:ring-primary-500 focus:border-slate-600 transition-all"
+                    value={formData.velocity}
+                    onChange={(e) => setFormData({ ...formData, velocity: e.target.value })}
+                    className="w-full px-4 py-2.5 bg-slate-800/50 border border-slate-700 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500"
                     placeholder="5"
-                    style={{ 
-                      color: '#ffffff',
-                      WebkitTextFillColor: '#ffffff',
-                      caretColor: '#ffffff'
-                    }}
+                    min="1"
                   />
                 </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-300 mb-2">Bugs</label>
+                  <input
+                    type="number"
+                    value={formData.bugs}
+                    onChange={(e) => setFormData({ ...formData, bugs: parseInt(e.target.value) || 0 })}
+                    className="w-full px-4 py-2.5 bg-slate-800/50 border border-slate-700 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500"
+                    placeholder="0"
+                    min="0"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-300 mb-2">Status</label>
+                  <select
+                    value={formData.status}
+                    onChange={(e) => setFormData({ ...formData, status: e.target.value })}
+                    className="w-full px-4 py-2.5 bg-slate-800/50 border border-slate-700 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500"
+                  >
+                    <option value="todo">To Do</option>
+                    <option value="in-progress">In Progress</option>
+                    <option value="done">Done</option>
+                  </select>
+                </div>
               </div>
+
               <div>
-                <label className="block text-sm font-medium text-slate-200 mb-2">Status</label>
-                <select
-                  value={formData.status}
-                  onChange={(e) => setFormData({ ...formData, status: e.target.value })}
-                  className="w-full px-4 py-3 bg-slate-800 border-2 border-slate-700 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-slate-600 transition-all"
-                  style={{ 
-                    color: '#ffffff',
-                    WebkitTextFillColor: '#ffffff'
-                  }}
-                >
-                  <option value="todo" style={{ backgroundColor: '#1e293b', color: '#ffffff' }}>To Do</option>
-                  <option value="in-progress" style={{ backgroundColor: '#1e293b', color: '#ffffff' }}>In Progress</option>
-                  <option value="done" style={{ backgroundColor: '#1e293b', color: '#ffffff' }}>Done</option>
-                </select>
+                <label className="block text-sm font-medium text-slate-300 mb-2">Due Date</label>
+                <input
+                  type="date"
+                  value={formatDateForInput(formData.dueDate)}
+                  onChange={(e) => setFormData({ ...formData, dueDate: e.target.value })}
+                  className="w-full px-4 py-2.5 bg-slate-800/50 border border-slate-700 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500"
+                  style={{ colorScheme: 'dark' }}
+                />
               </div>
+
               <div className="flex space-x-3 pt-4">
                 <button
                   type="button"
                   onClick={() => setShowModal(false)}
-                  className="flex-1 px-4 py-3 border border-slate-700 rounded-xl text-slate-300 hover:bg-slate-800 hover:text-white transition-all"
+                  className="flex-1 px-4 py-2.5 border border-slate-700 rounded-lg text-slate-300 hover:bg-slate-800 hover:text-white transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 px-4 py-3 bg-gradient-to-r from-slate-600 to-slate-700 text-white rounded-xl hover:from-slate-500 hover:to-slate-600 transition-all shadow-lg shadow-slate-900/30 font-semibold"
+                  className="flex-1 px-4 py-2.5 bg-gradient-to-r from-cyan-600 to-cyan-700 text-white rounded-lg hover:from-cyan-500 hover:to-cyan-600 transition-colors font-medium"
                 >
-                  {editingTask ? 'Update' : 'Create'}
+                  {editingTask ? 'Update Feature' : 'Add Feature'}
                 </button>
               </div>
             </form>
